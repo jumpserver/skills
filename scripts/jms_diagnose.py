@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only diagnostics for JumpServer connectivity and object resolution."""
+"""Environment initialization and read-only diagnostics for JumpServer."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ import argparse
 from jms_runtime import (
     ORG_SELECTION_NEXT_STEP,
     ensure_selected_org_context,
-    get_config_status,
     get_accessible_orgs,
+    get_config_status,
     get_user_profile,
     import_string,
     parse_json_arg,
@@ -98,6 +98,7 @@ def select_org(args: argparse.Namespace):
                     "reserved_org_auto_select_eligible"
                 ]
             ),
+            "message": "Choose one organization, then rerun with --confirm to persist JMS_ORG_ID.",
         }
 
     selected = next(
