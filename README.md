@@ -1,6 +1,6 @@
 # jumpserver-skills
 
-`jumpserver-skills` 是一个面向 JumpServer V4 的查询型 skill 仓库。它现在支持环境初始化写入，包括根据用户回复生成 `.env.local`、持久化 `JMS_ORG_ID`，但资产、权限、审计相关业务动作仍然只保留查询。
+`jumpserver-skills` 是一个面向 JumpServer V4 的查询型 skill 仓库。它支持环境初始化写入，包括根据用户回复生成 `.env.local`、持久化 `JMS_ORG_ID`，但资产、权限、审计相关业务动作仍然只保留查询。
 
 [English](./README.en.md)
 
@@ -22,13 +22,67 @@
 - 只有 `{0002}` 或 `{0002,0004}` 两种保留组织集合才会自动写入 `0002`
 - 不支持业务对象和权限的 `create/update/delete/append/remove/unblock`
 
-## 快速开始
+## 仓库结构
+
+```text
+.
+├── SKILL.md
+├── README.md
+├── README.en.md
+├── agents/
+│   └── openai.yaml
+├── references/
+│   ├── assets.md
+│   ├── audit.md
+│   ├── diagnose.md
+│   ├── object-map.md
+│   ├── permissions.md
+│   ├── runtime.md
+│   ├── safety-rules.md
+│   └── troubleshooting.md
+├── scripts/
+│   ├── jms_assets.py
+│   ├── jms_audit.py
+│   ├── jms_bootstrap.py
+│   ├── jms_diagnose.py
+│   ├── jms_permissions.py
+│   └── jms_runtime.py
+├── env.sh
+└── requirements.txt
+```
+
+## 组件职责
+
+| 组件 | 职责 |
+|---|---|
+| `SKILL.md` | 定义 skill 的触发条件、预检顺序、边界与推荐命令 |
+| `agents/openai.yaml` | 定义代理界面的展示名、简介和默认提示词 |
+| `references/*.md` | 按领域拆分的详细规则、运行时说明、故障排查与边界约束 |
+| `scripts/jms_assets.py` | 只读资产、账号、用户、用户组、平台、节点、组织查询入口 |
+| `scripts/jms_permissions.py` | 只读权限查询入口 |
+| `scripts/jms_audit.py` | 只读审计查询入口 |
+| `scripts/jms_diagnose.py` | 配置检查、`.env.local` 写入、连通性检查、组织选择、对象解析和访问分析入口 |
+| `scripts/jms_runtime.py` | 共享运行时：加载 `.env.local`、构造 SDK client、校验环境、处理组织上下文与自动写入逻辑 |
+
+## 技术栈与依赖
+
+| 项目 | 当前实现 |
+|---|---|
+| 语言 | Python 3 |
+| 核心依赖 | `jumpserver-sdk-python>=0.9.1` |
+| 运行方式 | 本地 CLI 脚本，通过 `python3 scripts/jms_*.py ...` 调用 |
+| 目标系统 | JumpServer V4 |
+| 配置来源 | `.env.local` + 进程环境变量 |
+| 配置写入 | `jms_diagnose.py config-write --confirm` |
+| 组织持久化 | `jms_diagnose.py select-org --confirm` |
 
 安装依赖：
 
 ```bash
 python3 -m pip install -r requirements.txt
 ```
+
+## 快速开始
 
 检查与初始化环境：
 
@@ -53,6 +107,56 @@ python3 scripts/jms_assets.py list --resource user --filters '{"username":"demo-
 python3 scripts/jms_permissions.py list --filters '{"limit":20}'
 python3 scripts/jms_audit.py list --audit-type operate --filters '{"limit":30}'
 ```
+
+## 环境变量
+
+下表以当前实现为准，来源于 `references/runtime.md` 和 `scripts/jms_runtime.py`。首次调用时，skill 会按这些字段要求通过对话收集配置，并把结果写入本地 `.env.local`。
+
+| 变量 | 是否必需 | 说明 | 示例 |
+|---|---|---|---|
+| `JMS_API_URL` | 与 `JMS_WEB_URL` 二选一 | JumpServer API/访问地址 | `https://jump.example.com` |
+| `JMS_WEB_URL` | 与 `JMS_API_URL` 二选一 | 运行时接受的地址回退变量 | `https://jump.example.com` |
+| `JMS_VERSION` | 建议配置 | JumpServer 版本，当前默认按 `4` 处理 | `4` |
+| `JMS_ACCESS_KEY_ID` | 与 `JMS_ACCESS_KEY_SECRET` 成组，或改用用户名密码 | AK/SK 鉴权 ID | `your-access-key-id` |
+| `JMS_ACCESS_KEY_SECRET` | 与 `JMS_ACCESS_KEY_ID` 成组，或改用用户名密码 | AK/SK 鉴权密钥 | `your-access-key-secret` |
+| `JMS_USERNAME` | 与 `JMS_PASSWORD` 成组，或改用 AK/SK | 用户名密码鉴权用户名 | `ops-user` |
+| `JMS_PASSWORD` | 与 `JMS_USERNAME` 成组，或改用 AK/SK | 用户名密码鉴权密码 | `your-password` |
+| `JMS_ORG_ID` | 初始化时可选 | 业务执行前通过 `select-org` 或保留组织特判写入 | `00000000-0000-0000-0000-000000000000` |
+| `JMS_TIMEOUT` | 可选 | SDK 请求超时秒数 | `30` |
+| `JMS_SDK_MODULE` | 可选 | 自定义 SDK 模块路径，默认 `jms_client.client` | `jms_client.client` |
+| `JMS_SDK_GET_CLIENT` | 可选 | 自定义 client 工厂函数名，默认 `get_client` | `get_client` |
+
+生成后的 `.env.local` 示例：
+
+```dotenv
+JMS_API_URL="https://jump.example.com"
+JMS_VERSION="4"
+JMS_ORG_ID=""
+
+JMS_ACCESS_KEY_ID="your-access-key-id"
+JMS_ACCESS_KEY_SECRET="your-access-key-secret"
+
+# JMS_USERNAME="ops-user"
+# JMS_PASSWORD="your-password"
+
+# JMS_TIMEOUT="30"
+# JMS_SDK_MODULE="jms_client.client"
+# JMS_SDK_GET_CLIENT="get_client"
+```
+
+环境变量规则：
+
+- 地址至少提供 `JMS_API_URL` 或 `JMS_WEB_URL` 之一
+- 认证方式必须二选一：`AK/SK` 或 `用户名/密码`
+- `.env.local` 会被脚本自动加载
+- 首次配置缺失时，推荐先执行 `python3 scripts/jms_diagnose.py config-status --json`
+- 如果你切换了 JumpServer、账号、组织或 `.env.local` 内容，应该按首次运行重新做全量校验
+
+实现备注：
+
+- 当前 `scripts/jms_runtime.py` 在构造 client 时固定使用 `verify=False`
+- HTTPS 证书告警会被抑制
+- 这两个行为目前不是通过环境变量控制的
 
 ## 常用命令
 
@@ -80,29 +184,12 @@ python3 scripts/jms_audit.py list --audit-type login --filters '{"limit":10}'
 python3 scripts/jms_audit.py get --audit-type command --id <command-id> --filters '{"command_storage_id":"<command-storage-id>"}'
 ```
 
-## 环境模型
-
-| 变量 | 说明 |
-|---|---|
-| `JMS_API_URL` 或 `JMS_WEB_URL` | JumpServer 地址 |
-| `JMS_ACCESS_KEY_ID` + `JMS_ACCESS_KEY_SECRET` | AK/SK 鉴权 |
-| `JMS_USERNAME` + `JMS_PASSWORD` | 基础鉴权 |
-| `JMS_ORG_ID` | 当前查询组织 |
-| `JMS_VERSION` | 默认 `4` |
-| `JMS_TIMEOUT` | 可选超时 |
-
-说明：
-
-- 仓库支持通过 `config-write --confirm` 生成或更新 `.env.local`
-- 仓库支持通过 `select-org --confirm` 写回 `JMS_ORG_ID`
-- 正式业务命令仍然只保留查询能力
-
 ## 文档地图
 
 | 文件 | 用途 |
 |---|---|
 | `SKILL.md` | 路由规则、环境初始化边界、查询边界 |
-| `references/runtime.md` | 环境检查、`.env.local` 写入、组织持久化 |
+| `references/runtime.md` | 环境变量模型、`.env.local` 写入、组织持久化 |
 | `references/assets.md` | 资产类查询 |
 | `references/permissions.md` | 权限查询 |
 | `references/audit.md` | 审计查询 |
