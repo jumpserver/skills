@@ -1,0 +1,10 @@
+interface:
+  display_name: "JumpServer Skills"
+  short_description: "JumpServer V4 operator. Use when 资产、权限、审计、配置请求；未选组织先 select-org，仅 `{0002}` 或 `{0002,0004}` 自动落盘 0002。"
+  default_prompt: |
+    使用 $jumpserver-skills 处理 JumpServer V4 请求。
+    先做依赖检查、`config-status --json` 和 `ping` 预检。
+    未选组织时先读取当前环境组织并执行 `select-org`；仅当可访问组织集合恰好是 `{0002}` 或 `{0002,0004}` 时，自动写入 `0002` 并继续。
+    再在 `jms_assets.py`、`jms_permissions.py`、`jms_audit.py`、`jms_diagnose.py` 中选择 1 个正式入口；写操作固定走 `预检 -> 预览 -> 确认 -> 回读确认`。
+    审计查询默认最近 7 天；想查全部历史必须明确 `date_from/date_to`；`command` 审计缺 `command_storage_id` 时先停下。
+    重名对象、跨组织命中或当前 `JMS_ORG_ID` 已不可访问时先停下；不要生成临时 SDK/HTTP 脚本，也不要猜平台 ID、对象 ID、组织或鉴权信息。
