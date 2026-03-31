@@ -34,6 +34,7 @@ from jumpserver_api.jms_analytics import (
 )
 from jumpserver_api.jms_capabilities import CAPABILITIES
 from jumpserver_api.jms_runtime import (
+    build_org_selection_required_payload,
     CLIError,
     DEFAULT_PAGE_SIZE,
     ORG_SELECTION_NEXT_STEP,
@@ -87,8 +88,10 @@ def _select_org(args: argparse.Namespace):
     candidates = list_accessible_orgs()
     current_context = resolve_effective_org_context(auto_select=False)
     if not args.org_id:
+        if current_context.get("selection_required"):
+            return build_org_selection_required_payload(current_context)
         return {
-            "selection_required": True,
+            "selection_required": False,
             "candidate_orgs": candidates,
             "next_step": ORG_SELECTION_NEXT_STEP,
             **org_context_output(current_context),
@@ -96,12 +99,19 @@ def _select_org(args: argparse.Namespace):
     selected = next((item for item in candidates if str(item.get("id")) == args.org_id), None)
     if selected is None:
         raise CLIError("Organization %s is not accessible in the current environment." % args.org_id)
+    preview_scope = "%s (%s)" % (
+        str(selected.get("name") or "").strip() or "Unknown",
+        str(selected.get("id") or "").strip() or "<unknown-org-id>",
+    )
     preview_context = {
         **current_context,
         "effective_org": {**selected, "source": "user_selected"},
         "switchable_orgs": [item for item in candidates if str(item.get("id") or "") != str(args.org_id)],
         "switchable_org_count": len([item for item in candidates if str(item.get("id") or "") != str(args.org_id)]),
-        "org_context_hint": "当前预览切换后的组织；确认后可继续切换到其他可访问组织查询。" if len(candidates) > 1 else None,
+        "org_context_hint": (
+            "当前预览的查询范围将切换为组织 %s；确认写入后才能按该组织继续查询。"
+            % preview_scope
+        ),
     }
     if not args.confirm:
         return {
@@ -111,11 +121,20 @@ def _select_org(args: argparse.Namespace):
         }
     require_confirmation(args)
     persisted = persist_selected_org(args.org_id)
+    confirmed_context = {
+        **preview_context,
+        "org_context_hint": (
+            "当前查询范围固定为组织 %s；如需切换查询范围，请先切换组织。"
+            % preview_scope
+            if preview_context["switchable_org_count"]
+            else None
+        ),
+    }
     return {
         "selection_required": False,
         "current_nonsecret": persisted["current_nonsecret"],
         "env_file_path": persisted["env_file_path"],
-        **org_context_output(preview_context),
+        **org_context_output(confirmed_context),
     }
 
 

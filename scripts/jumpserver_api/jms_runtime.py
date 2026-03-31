@@ -62,6 +62,8 @@ USER_PROFILE_PATH = "/api/v1/users/profile/"
 ORG_SELECTION_NEXT_STEP = (
     "python3 scripts/jumpserver_api/jms_diagnose.py select-org --org-id <org-id> --confirm"
 )
+ORG_SELECTION_REQUIRED_REASON_CODE = "organization_selection_required"
+ORG_SELECTION_POLICY = "required_before_query_when_multiple_accessible_orgs"
 DEFAULT_TIMEOUT = 30
 _GLOBAL_ORG_PROBE_ATTEMPTED = False
 _GLOBAL_ORG_PROBE_RESULT: dict[str, Any] | None = None
@@ -405,15 +407,44 @@ def _switchable_orgs(accessible_orgs: list[dict[str, Any]], effective_org: dict[
     ]
 
 
+def _org_scope_label(effective_org: dict[str, Any] | None) -> str:
+    payload = dict(effective_org or {})
+    org_id = str(payload.get("id") or "").strip() or "<unknown-org-id>"
+    org_name = str(payload.get("name") or "").strip() or "Unknown"
+    return "%s (%s)" % (org_name, org_id)
+
+
 def _org_context_hint(effective_org: dict[str, Any] | None, switchable_orgs: list[dict[str, Any]]) -> str | None:
     if not effective_org or not switchable_orgs:
         return None
+    org_scope = _org_scope_label(effective_org)
     source = str(effective_org.get("source") or "").strip()
     if source == "env":
-        return "当前按 .env / JMS_ORG_ID 中的组织执行查询；如需切换，可使用 select-org --org-id <org-id> --confirm。"
+        return "当前查询范围固定为组织 %s；如需改查其他组织，请先切换组织。" % org_scope
     if source == "reserved_auto_select":
-        return "当前按保留组织自动选择结果执行查询；如需切换，可使用 select-org --org-id <org-id> --confirm。"
-    return "当前组织已生效；如需切换查询范围，可使用 select-org --org-id <org-id> --confirm。"
+        return "当前查询范围按保留组织规则固定为组织 %s；如需改查其他组织，请先切换组织。" % org_scope
+    return "当前查询范围固定为组织 %s；如需切换查询范围，请先切换组织。" % org_scope
+
+
+def build_org_selection_required_payload(context: dict[str, Any]) -> dict[str, Any]:
+    candidate_orgs = context.get("candidate_orgs")
+    if not isinstance(candidate_orgs, list):
+        candidate_orgs = []
+    return {
+        "selection_required": True,
+        "candidate_orgs": candidate_orgs,
+        "candidate_org_count": len(candidate_orgs),
+        "next_step": ORG_SELECTION_NEXT_STEP,
+        "reserved_org_auto_select_eligible": bool(context.get("reserved_org_auto_select_eligible")),
+        "reason_code": ORG_SELECTION_REQUIRED_REASON_CODE,
+        "user_message": "检测到多个可访问组织，继续前必须先选择一个组织。",
+        "action_hint": (
+            "请从 candidate_orgs 中选择 1 个 org_id，然后执行 %s。"
+            % ORG_SELECTION_NEXT_STEP
+        ),
+        "org_selection_policy": ORG_SELECTION_POLICY,
+        **org_context_output(context),
+    }
 
 
 def org_context_output(context: dict[str, Any]) -> dict[str, Any]:
@@ -509,13 +540,8 @@ def ensure_selected_org_context() -> dict[str, Any]:
     context = resolve_effective_org_context()
     if context["selection_required"]:
         raise CLIError(
-            "Organization selection is required before running this command.",
-            payload={
-                "selection_required": True,
-                "candidate_orgs": context["candidate_orgs"],
-                "next_step": ORG_SELECTION_NEXT_STEP,
-                "reserved_org_auto_select_eligible": context["reserved_org_auto_select_eligible"],
-            },
+            "Organization selection is required: multiple accessible organizations were detected.",
+            payload=build_org_selection_required_payload(context),
         )
     return context
 

@@ -9,8 +9,8 @@
 - 预检分两级：当前解释器环境缺依赖时先做依赖自愈 + 全量校验，依赖已就绪的后续请求做轻量校验。
 - 若未指定 `JMS_ORG_ID`，运行时先读取当前环境全部可访问组织；默认不自动代选组织。
 - 只有当可访问组织集合恰好是 `{0002}` 或 `{0002,0004}` 时，运行时才会自动将 `0002` 写入 `.env` 并继续。
-- 即使 `.env` 中的 `JMS_ORG_ID` 已生效，查询结果也会回显当前仍可切换到哪些组织，便于继续按其他组织范围查询。
-- 除 `config-status`、`config-write`、`ping`、`select-org` 外，其余业务命令在未选组织时都会先停下。
+- 即使 `.env` 中的 `JMS_ORG_ID` 已生效，查询结果也会回显当前仍可切换到哪些组织，并通过 `org_context_hint` 说明当前查询范围固定在哪个组织。
+- 除 `config-status`、`config-write`、`ping`、`select-org` 外，其余业务命令在未选组织时都会先停下；组织阻塞时会额外返回 `reason_code`、`user_message`、`action_hint`、`candidate_org_count` 等结构化提示字段。
 
 ## 预检模式总览
 
@@ -94,8 +94,16 @@ python3 scripts/jumpserver_api/jms_diagnose.py ping
 | `JMS_ORG_ID` 已设置但不可访问 | 阻塞，要求重新 `select-org` |
 | `JMS_ORG_ID` 为空，且可访问组织集合是 `{0002}` | 自动写入 `0002`，重新加载后继续 |
 | `JMS_ORG_ID` 为空，且可访问组织集合是 `{0002,0004}` | 自动写入 `0002`，重新加载后继续 |
-| `JMS_ORG_ID` 为空，且是其他组织集合 | 阻塞，返回 `candidate_orgs`，要求先 `select-org` |
+| `JMS_ORG_ID` 为空，且是其他组织集合 | 阻塞，返回 `candidate_orgs`，并通过 `user_message` / `action_hint` 要求先 `select-org` |
 | 当前组织是 A，目标对象在 B | 不自动切换组织；返回跨组织阻塞信息 |
+
+组织阻塞返回字段：
+
+- `reason_code=organization_selection_required`
+- `user_message`：明确要求先选择组织
+- `action_hint`：返回 `select-org --org-id <org-id> --confirm` 的安全命令模板
+- `candidate_org_count`：候选组织数量
+- `org_selection_policy=required_before_query_when_multiple_accessible_orgs`
 
 ## 正式入口
 

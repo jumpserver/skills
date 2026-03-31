@@ -10,7 +10,7 @@ Inside the repository, requests are automatically routed to three formal entrypo
 
 1. Connect this skill to your agent or Codex environment. The repository file [agents/openai.yaml](./agents/openai.yaml) can be used directly as the integration description.
 2. Initialize the configuration in natural language, for example: "Help me generate `.env`. My JumpServer URL is `https://jump.example.com`, and I log in with AK/SK."
-3. Then continue with direct requests such as "Which assets can this user access?" or "Show me yesterday's usage."
+3. Then continue with direct requests such as "Which assets can this user access in the Default organization?" or "Show me yesterday's usage."
 
 For first-time use, the natural-language `.env` generation path is usually the fastest option.
 
@@ -22,6 +22,7 @@ For first-time use, the natural-language `.env` generation path is usually the f
 | Permission relationships | permission rules, ACL, RBAC, who can access an asset, details of a permission rule | `jms_query.py` | Read and explain only; no permission writes |
 | Audit investigation | login, session, command, file transfer, abnormal behavior, high-risk commands, failed login investigations | `jms_query.py` | Best for logs, records, details, and event-level requests |
 | Configuration and diagnostics | config checks, connectivity, org switching, object resolution, license, system settings, storage, tickets | `jms_diagnose.py` | Best for preflight, environment confirmation, and governance prerequisites |
+| User effective access scope | which assets or nodes a user can access, or which accounts/protocols a user can use on an asset | `jms_diagnose.py` | Returns effective access scope first instead of defaulting to permission-rule explanations |
 | Governance inspection | asset governance, account governance, access analysis, system inspection, capability-based aggregate analysis | `jms_diagnose.py` | Prefer capability aggregation instead of forcing users to stitch together scattered queries |
 | Usage reports | daily reports, usage situation, usage analysis, what happened on a day, rankings or overviews for a time range | `jms_report.py` | These requests produce a complete HTML report instead of a one-line summary |
 
@@ -44,9 +45,9 @@ If local configuration is incomplete, the runtime can also generate `.env` direc
 
 2. Connect this skill to your agent or Codex environment. The repository file [agents/openai.yaml](./agents/openai.yaml) provides a ready-to-use skill integration description and can serve as one of the entrypoints for referencing or registering the skill.
 
-3. Describe requests directly in natural language instead of manually assembling script commands. For example: "Which assets can this user access?", "Show me yesterday's usage", or "Show the details of this permission rule."
+3. Describe requests directly in natural language instead of manually assembling script commands. For example: "Which assets can this user access in the Default organization?", "Show me yesterday's usage", or "Show the details of this permission rule."
 
-4. Add context based on the returned result. If the result shows `candidate_orgs`, `switchable_orgs`, candidate objects, or a missing time range, follow the prompt and provide the organization, object name, platform, or time window.
+4. Add context based on the returned result. If the result shows `candidate_orgs`, `switchable_orgs`, candidate objects, or a missing time range, follow the prompt and provide the organization, object name, platform, or time window. When organization selection is mandatory, the response also includes `reason_code`, `user_message`, `action_hint`, and `candidate_org_count` so the next step is explicit.
 
 You do not need to remember specific execution commands. This skill performs preflight first, then routes to the formal entrypoint automatically, and prompts for organization, object, or time-range details only when needed.
 
@@ -89,6 +90,7 @@ Environment variable rules:
 - "Show me the details for the user `Demo-User`."
 - "Show me which assets are under the node named `Demo-Node`."
 - "Show me which assets are available on the `Linux` platform."
+- "Which assets can this user access in the Default organization?"
 - "Show me the details of this permission rule, and tell me which users and assets it affects."
 - "Who can access this asset?"
 - "Query the login audit for the last week."
@@ -103,6 +105,8 @@ Environment variable rules:
 
 These boundaries are especially important:
 
+- Expressions like `which assets can this user access in the Default organization`, `which nodes can this user access`, or `which accounts can this user use on this asset` belong to user effective access scope and should return scope results first.
+- Expressions like `why can this user access this asset` or `details of this permission rule` belong to permission explanation or access analysis.
 - Expressions like `login status for a day`, `session overview for a day`, or `who had the most activity in a time range` belong to reports or usage analysis.
 - Expressions like `login logs for a day`, `command records for a day`, or `details of a specific session` belong to audit investigation.
 
@@ -132,8 +136,8 @@ Reports are always written to `reports/JumpServer-YYYY-MM-DD.html`. If the reque
 
 - When the user explicitly specifies an organization, execute in that organization.
 - For report or usage-analysis requests with no specified organization, or when the user explicitly says "all organizations" or "global organization", default to trying the global organization `00000000-0000-0000-0000-000000000000` first.
-- For ordinary query requests with no specified organization, the existing organization rules apply. If the organization cannot be determined safely, the result returns `candidate_orgs` and asks the user to choose one first.
-- If the current organization is already active but other organizations can still be switched to, the result continues to return `switchable_orgs` so the user can continue in another organization.
+- For ordinary query requests with no specified organization, the existing organization rules apply. If the organization cannot be determined safely, the result returns `candidate_orgs` and uses `user_message` / `action_hint` to explicitly require an organization choice before continuing.
+- If the current organization is already active but other organizations can still be switched to, the result continues to return `switchable_orgs`, and `org_context_hint` makes it clear which organization currently defines the query scope.
 - If the current organization is A and the target object is in B, the workflow does not continue automatically across organizations.
 
 In the following cases, the skill blocks instead of continuing by guesswork:
@@ -144,6 +148,14 @@ In the following cases, the skill blocks instead of continuing by guesswork:
 - query results cross organizations
 - the global organization required by the report request is not accessible
 - the user tries to bypass the formal entrypoint or skip preflight
+
+Organization-blocking responses also include these structured fields:
+
+- `reason_code=organization_selection_required`
+- `user_message`, which explicitly says an organization must be chosen before continuing
+- `action_hint`, which provides the safe next command template
+- `candidate_org_count`, which shows how many accessible organization candidates are available
+- `org_selection_policy=required_before_query_when_multiple_accessible_orgs`
 
 ## Document Map
 

@@ -23,16 +23,20 @@ description: JumpServer V4.10 查询与分析 skill。Use when users ask to quer
 2. 如果用户要配置 JumpServer、检查依赖、检查配置、检查连通性、切换组织、查看许可证、系统设置、报表、工单、存储、终端或做对象解析，先走 `jms_diagnose.py`。
 动作：先预检，再用 `config-status` / `ping` / `select-org` / `inspect` / `resolve`。
 
-3. 如果用户要看授权规则、ACL、RBAC、为什么某人能访问某资产、某条权限详情，走 `jms_query.py`。
-动作：优先 `permission-list` / `permission-get` / `asset-perm-users`；必要时先用 `jms_diagnose.py` 做访问分析。
+3. 如果用户要查某某用户当前能访问哪些资产、节点，或在某资产下有哪些账号 / 协议，归为“用户有效访问范围”，先走 `jms_diagnose.py`。
+动作：显式给了组织就先按用户指定组织执行；结果型问法优先 `user-assets` / `user-nodes` / `user-asset-access`，先返回有效访问范围结果，不回退成授权规则说明。
 
-4. 如果用户要查登录、会话、终端会话、命令记录、文件传输、异常行为、高危命令、失败登录、特权账号使用审计，走 `jms_query.py`。
+4. 如果用户要看授权规则、ACL、RBAC、为什么某人能访问某资产、某条权限详情，走 `jms_query.py`。
+动作：优先 `permission-list` / `permission-get` / `asset-perm-users`；必要时先用 `jms_diagnose.py` 做访问分析。
+只有明确问“为什么 / 依据 / 授权规则 / 权限详情”时，才进入这一类。
+
+5. 如果用户要查登录、会话、终端会话、命令记录、文件传输、异常行为、高危命令、失败登录、特权账号使用审计，走 `jms_query.py`。
 动作：优先 `audit-analyze --capability ...`，需要明细时再用 `audit-list` / `audit-get` / `terminal-sessions`。
 
-5. 如果用户要查资产、节点、平台、账号、账号模板、用户、用户组、组织、标签、网域等对象，走 `jms_query.py`。
+6. 如果用户要查资产、节点、平台、账号、账号模板、用户、用户组、组织、标签、网域等对象，走 `jms_query.py`。
 动作：只做 `object-list` / `object-get`；名称不唯一时先解析，不要猜。
 
-6. 如果用户要做治理巡检、聚合分析、账号治理、资产治理、访问分析、系统巡检或 capability 型统计，走 `jms_diagnose.py inspect --capability ...`。
+7. 如果用户要做治理巡检、聚合分析、账号治理、资产治理、访问分析、系统巡检或 capability 型统计，走 `jms_diagnose.py inspect --capability ...`。
 动作：优先 capability，不手工拼多条零散查询。
 
 普通路由细节、更多命中说法和反例见 [references/routing-playbook.md](references/routing-playbook.md)。
@@ -57,6 +61,7 @@ description: JumpServer V4.10 查询与分析 skill。Use when users ask to quer
 6. 当前 `JMS_ORG_ID` 已不可访问：先重新 `select-org`，不要继续业务命令。
 7. 查询类请求在未确定组织且存在多个可访问组织时：先返回 `candidate_orgs` 并要求用户选择查询组织。
 8. 查询类请求在当前组织已生效且仍有其他可切换组织时：继续返回 `switchable_orgs`，提示用户还可以切换到哪些组织查询。
+9. 用户明确说“在 Default 组织下”“在某组织下”这类表达时，视为显式组织，不是弱过滤提示；先解析组织并切到目标组织，再查用户有效访问范围。
 
 ## Standard Flow
 
@@ -71,6 +76,7 @@ description: JumpServer V4.10 查询与分析 skill。Use when users ask to quer
 - 配置或环境不确定时，先执行 `python3 scripts/jumpserver_api/jms_diagnose.py config-status --json`。
 - `complete=false` 时，先补齐配置，再继续。
 - 名称不唯一、平台不明确、对象跨组织时，先解析或阻塞，不要猜。
+- “某某用户在某组织下有哪些资产 / 节点 / 账号” 这类请求先解析组织，必要时执行 `select-org --org-id <org-id> --confirm`，再解析用户；对中文姓名等显示名，允许先解析用户对象，再用 `user-id` 执行 `user-assets` / `user-nodes` / `user-asset-access`。
 - 审计类问题没有 `date_from/date_to` 时，默认最近 7 天；想查更大范围时优先要求明确时间窗。
 - 模板化使用报告/使用分析请求必须先走 `python3 scripts/jumpserver_api/jms_report.py daily-usage ...`；它会负责时间归一化、组织处理、字段元数据取数、模板填充和生成后自检。普通查询优先只选 1 个正式入口。
 
@@ -80,6 +86,8 @@ description: JumpServer V4.10 查询与分析 skill。Use when users ask to quer
 - 不猜对象 ID、平台 ID、组织、鉴权信息或筛选条件。
 - 不创建、更新、删除、解锁对象，也不追加或移除权限关系。
 - 权限问题只做读取和解释，不做权限写入。
+- 对“某某用户在某组织下有哪些资产”不要直接返回授权规则说明，也不要把“有哪些资产”自动翻译成“解释访问依据”。
+- 不要因为句子里带了“用户”二字就优先落到权限关系；结果型问法先返回有效访问范围结果。
 - 模板化报告请求必须优先使用 `python3 scripts/jumpserver_api/jms_report.py daily-usage ...`；不要现场写临时拼装逻辑。若正式入口缺失，应先补齐正式入口，再使用它。
 - 模板化报告请求只使用字段元数据里声明的来源，不用 Markdown 模板替代 HTML 模板。
 - 模板化报告请求中的命令审计字段，未显式给 `command_storage_id` 时默认汇总全部可访问 command storage；普通命令审计查询仍沿用默认 storage / 单个 storage / 多 storage 阻塞逻辑。
@@ -93,7 +101,8 @@ description: JumpServer V4.10 查询与分析 skill。Use when users ask to quer
 - `effective_org`
 - `switchable_orgs`（当当前组织已生效且仍有其他可切换组织时）
 - 执行命令摘要
-- 普通查询：结果摘要
+- 用户有效访问范围：`asset_count` + `assets`，或 `node_count` + `nodes`，或 `permed_accounts` + `permed_protocols`
+- 其他普通查询：结果摘要
 - 模板报告：完整 HTML 报告，且已经通过生成后自检
 
 模板报告成功时还至少回显：

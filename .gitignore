@@ -11,4 +11,5 @@ __pycache__/
 .idea/
 *.log
 
-tests/
+tests/*
+!tests/test_*.py
