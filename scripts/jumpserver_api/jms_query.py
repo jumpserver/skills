@@ -19,13 +19,17 @@ from jumpserver_api.jms_analytics import (
     _exact_first_filter,
     _fetch_terminal_session_records,
     _normalize_time_filters,
+    _resolve_asset,
+    _resolve_user,
     _server_filters,
+    explain_asset_permissions,
     resolve_command_storage_context,
     run_capability,
 )
 from jumpserver_api.jms_runtime import (
     CLIError,
     create_client,
+    create_discovery,
     ensure_selected_org_context,
     org_context_output,
     parse_bool,
@@ -149,6 +153,32 @@ def _without_pagination(filters: dict) -> dict:
     return payload
 
 
+def _apply_requested_page(records, filters: dict):
+    if not isinstance(records, list):
+        return records
+    if filters.get("limit") in {None, ""} and filters.get("offset") in {None, ""}:
+        return records
+    try:
+        offset = max(int(filters.get("offset") or 0), 0)
+    except (TypeError, ValueError):
+        offset = 0
+    try:
+        limit = int(filters.get("limit")) if filters.get("limit") not in {None, ""} else None
+    except (TypeError, ValueError):
+        limit = None
+    if limit is not None and limit < 0:
+        limit = None
+    end = offset + limit if limit is not None else None
+    return records[offset:end]
+
+
+def _merge_match_strategy(current: str, addition: str) -> str:
+    parts = [item for item in str(current or "").split("+") if item]
+    if addition not in parts:
+        parts.append(addition)
+    return "+".join(parts) if parts else addition
+
+
 def _candidate_brief(resource: str, item: dict) -> dict:
     if resource == "asset":
         return {
@@ -202,6 +232,54 @@ def _apply_local_exact_filters(client, *, path: str, resource: str, filters: dic
         current = _exact_first_filter(broader, value, field)
         match_strategy = "local_exact_first_broad_fetch"
     return current, match_strategy, matched_fields
+
+
+def _permission_detail_matches_user(detail: dict, *, resolved_user: dict) -> bool:
+    user_id = str(resolved_user.get("id") or "").strip()
+    user_name = str(resolved_user.get("name") or "").strip().lower()
+    user_username = str(resolved_user.get("username") or "").strip().lower()
+    user_group_ids = {
+        str(item.get("id", item)).strip()
+        for item in (resolved_user.get("groups") or [])
+        if str(item.get("id", item) if isinstance(item, dict) else item).strip()
+    }
+    expected_values = {value for value in {user_id, user_name, user_username} if value}
+
+    for item in detail.get("users", []) or []:
+        if isinstance(item, dict):
+            item_id = str(item.get("id") or "").strip()
+            item_name = str(item.get("name") or "").strip().lower()
+            item_username = str(item.get("username") or "").strip().lower()
+            if user_id and item_id == user_id:
+                return True
+            if user_username and item_username == user_username:
+                return True
+            if user_name and item_name == user_name:
+                return True
+            continue
+        item_text = str(item or "").strip()
+        if item_text and (item_text == user_id or item_text.lower() in expected_values):
+            return True
+
+    detail_group_ids = {
+        str(item.get("id", item)).strip()
+        for item in (detail.get("user_groups") or [])
+        if str(item.get("id", item) if isinstance(item, dict) else item).strip()
+    }
+    return bool(detail_group_ids & user_group_ids)
+
+
+def _filter_asset_permission_records_by_user(client, records, user_filter, *, discovery=None):
+    resolved_user = _resolve_user(str(user_filter or "").strip(), discovery=discovery)
+    filtered_records = []
+    for item in records:
+        permission_id = str(item.get("id") or "").strip() if isinstance(item, dict) else ""
+        if not permission_id:
+            continue
+        detail = client.get("%s%s/" % (_permission_resource_path("asset-permission"), permission_id))
+        if _permission_detail_matches_user(detail, resolved_user=resolved_user):
+            filtered_records.append(item)
+    return filtered_records, resolved_user
 
 
 def _object_list(args: argparse.Namespace):
@@ -291,6 +369,37 @@ def _permission_list(args: argparse.Namespace):
         summary["matched_name"] = filters.get("name")
 
     if isinstance(filtered_records, list) and args.resource == "asset-permission":
+        requested_user_filter = next(
+            ((field, filters.get(field)) for field in ("users", "user") if filters.get(field) not in {None, ""}),
+            None,
+        )
+        if requested_user_filter is not None:
+            field_name, field_value = requested_user_filter
+            discovery = create_discovery()
+            broader_filters = _without_pagination({key: value for key, value in filters.items() if key not in {"user", "users"}})
+            broader_records = client.list_paginated(path, params=broader_filters)
+            broader_records = [item for item in broader_records if isinstance(item, dict)] if isinstance(broader_records, list) else []
+            locally_filtered_records, resolved_user = _filter_asset_permission_records_by_user(
+                client,
+                broader_records,
+                field_value,
+                discovery=discovery,
+            )
+            filtered_records = _apply_requested_page(locally_filtered_records, filters)
+            match_strategy = _merge_match_strategy(match_strategy, "local_detail_user_filter")
+            summary["requested_user_filter"] = {"field": field_name, "value": field_value}
+            summary["matched_user"] = {
+                "id": resolved_user.get("id"),
+                "name": resolved_user.get("name"),
+                "username": resolved_user.get("username"),
+                "email": resolved_user.get("email"),
+            }
+            summary["local_detail_user_filter_candidate_count"] = len(broader_records)
+            summary["local_detail_user_filter_total_before_pagination"] = len(locally_filtered_records)
+            if not filtered_records and not summary.get("empty_reason_hint"):
+                summary["empty_reason_hint"] = "当前组织下实时可见的 asset-permission 中未发现匹配该用户或其用户组的规则。"
+
+    if isinstance(filtered_records, list) and args.resource == "asset-permission":
         visible_sample = filtered_records
         if filters.get("name") and not filtered_records:
             visible_sample = client.list_paginated(path, params={k: v for k, v in filters.items() if k not in {"name", "search"}})
@@ -342,14 +451,37 @@ def _permission_get(args: argparse.Namespace):
 def _asset_perm_users(args: argparse.Namespace):
     context = ensure_selected_org_context()
     client = create_client()
+    discovery = create_discovery()
     filters = parse_json_arg(args.filters)
     records = client.list_paginated("/api/v1/assets/assets/%s/perm-users/" % args.asset_id, params=filters)
-    return {
+    result = {
         "resource": "asset-perm-users",
         "asset_id": args.asset_id,
         "records": records,
         **org_context_output(context),
     }
+    if isinstance(records, list) and not records:
+        asset = _resolve_asset(args.asset_id, discovery=discovery)
+        explanation = explain_asset_permissions(asset, client=client, discovery=discovery)
+        if explanation.get("matched_permission_count"):
+            result.update(
+                {
+                    "service_view_mismatch": True,
+                    "warning": "Asset permission users API returned no records, but matching asset-permissions were found for this asset.",
+                    "permission_explain_summary": {
+                        "matched_permission_count": explanation.get("matched_permission_count"),
+                        "matched_permissions": [
+                            {
+                                "id": item.get("id"),
+                                "name": item.get("name"),
+                                "match_source": item.get("match_source"),
+                            }
+                            for item in explanation.get("matched_permissions", [])
+                        ],
+                    },
+                }
+            )
+    return result
 
 
 def _audit_list(args: argparse.Namespace):

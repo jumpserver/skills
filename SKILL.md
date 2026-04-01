@@ -24,10 +24,10 @@ description: JumpServer V4.10 查询与分析 skill。Use when users ask to quer
 动作：先预检，再用 `config-status` / `ping` / `select-org` / `inspect` / `resolve`。
 
 3. 如果用户要查某某用户当前能访问哪些资产、节点，或在某资产下有哪些账号 / 协议，归为“用户有效访问范围”，先走 `jms_diagnose.py`。
-动作：显式给了组织就先按用户指定组织执行；结果型问法优先 `user-assets` / `user-nodes` / `user-asset-access`，先返回有效访问范围结果，不回退成授权规则说明。
+动作：显式给了组织就先按用户指定组织执行；结果型问法优先 `user-assets` / `user-nodes` / `user-asset-access`，先返回有效访问范围结果，不回退成授权规则说明；`user-assets` / `user-nodes` 的 effective access 结果是资产/节点清单的唯一权威来源。
 
 4. 如果用户要看授权规则、ACL、RBAC、为什么某人能访问某资产、某条权限详情，走 `jms_query.py`。
-动作：优先 `permission-list` / `permission-get` / `asset-perm-users`；必要时先用 `jms_diagnose.py` 做访问分析。
+动作：`资产授权给了谁 / 谁被授权到这台资产 / 这台资产有哪些授权用户` 优先 `asset-perm-users`；`为什么会被授权 / 节点授权是否覆盖它 / 权限详情` 优先 `jms_diagnose.py asset-permission-explain` + `permission-list/get`；必要时再做访问分析。
 只有明确问“为什么 / 依据 / 授权规则 / 权限详情”时，才进入这一类。
 
 5. 如果用户要查登录、会话、终端会话、命令记录、文件传输、异常行为、高危命令、失败登录、特权账号使用审计，走 `jms_query.py`。
@@ -76,7 +76,7 @@ description: JumpServer V4.10 查询与分析 skill。Use when users ask to quer
 - 配置或环境不确定时，先执行 `python3 scripts/jumpserver_api/jms_diagnose.py config-status --json`。
 - `complete=false` 时，先补齐配置，再继续。
 - 名称不唯一、平台不明确、对象跨组织时，先解析或阻塞，不要猜。
-- “某某用户在某组织下有哪些资产 / 节点 / 账号” 这类请求先解析组织，必要时执行 `select-org --org-id <org-id> --confirm`，再解析用户；对中文姓名等显示名，允许先解析用户对象，再用 `user-id` 执行 `user-assets` / `user-nodes` / `user-asset-access`。
+- “某某用户在某组织下有哪些资产 / 节点 / 账号” 这类请求先解析组织；优先直接使用 `--org-id` / `--org-name` 在单次命令内限定组织，不要求先写回 `.env`。对中文姓名等显示名，允许先解析用户对象，再用 `user-id` 执行 `user-assets` / `user-nodes` / `user-asset-access`。
 - 审计类问题没有 `date_from/date_to` 时，默认最近 7 天；想查更大范围时优先要求明确时间窗。
 - “某用户某天连接过哪些机器 / 某天会话数” 这类问题，优先返回两套口径：`session_count` 与去重后的 `assets`；机器列表用去重资产，不要把会话条数直接说成机器数。
 - 模板化使用报告/使用分析请求必须先走 `python3 scripts/jumpserver_api/jms_report.py daily-usage ...`；它会负责时间归一化、组织处理、字段元数据取数、模板填充和生成后自检。普通查询优先只选 1 个正式入口。
@@ -87,7 +87,7 @@ description: JumpServer V4.10 查询与分析 skill。Use when users ask to quer
 - 不猜对象 ID、平台 ID、组织、鉴权信息或筛选条件。
 - 不创建、更新、删除、解锁对象，也不追加或移除权限关系。
 - 权限问题只做读取和解释，不做权限写入。
-- 对“某某用户在某组织下有哪些资产”不要直接返回授权规则说明，也不要把“有哪些资产”自动翻译成“解释访问依据”。
+- 对“某某用户在某组织下有哪些资产”不要直接返回授权规则说明，也不要把“有哪些资产”自动翻译成“解释访问依据”；显式组织问法不得回退成“检查所有组织”。
 - 不要因为句子里带了“用户”二字就优先落到权限关系；结果型问法先返回有效访问范围结果。
 - 只有正式入口在精确时间窗和正确组织下实际返回 `0` 条时，才能说“没有记录”；不要因为单个入口没命中就下结论。
 - 未经验证，不要猜测“页面选错日期”“时区差异”“数据同步延迟”“数据未同步”等原因。

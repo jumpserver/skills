@@ -22,6 +22,7 @@
 | `user-assets` | 查用户当前可访问资产 | `--user-id` 或 `--username` | 有效资产列表 |
 | `user-nodes` | 查用户当前可访问节点 | `--user-id` 或 `--username` | 有效节点列表 |
 | `user-asset-access` | 查用户在某资产下的账号与协议 | 一个用户定位 + 一个资产定位 | `permed_accounts`、`permed_protocols` |
+| `asset-permission-explain` | 从资产视角解释命中的授权规则 | `--asset-id` 或 `--asset-name` | `matched_permissions`、`match_source`、`match_evidence` |
 | `recent-audit` | 快速看最近审计 | `--audit-type` | 最近事件列表，包含 `data_source` / `filter_strategy` / `asset_evidence` |
 | `settings-category` | 按设置分类读取系统配置 | `--category` | 原始设置项与分类摘要 |
 | `license-detail` | 查看许可证详情 | 无 | 许可证原始详情 |
@@ -58,6 +59,7 @@ python3 scripts/jumpserver_api/jms_diagnose.py resolve-platform --value Unix
 
 ```bash
 python3 scripts/jumpserver_api/jms_diagnose.py user-assets --username openclaw
+python3 scripts/jumpserver_api/jms_diagnose.py user-assets --org-name Default --username jingyu.qi
 python3 scripts/jumpserver_api/jms_diagnose.py user-assets --user-name openclaw
 python3 scripts/jumpserver_api/jms_diagnose.py user-nodes --user-id 4f8b763f-5c21-4b77-903c-37a7838968ae
 ```
@@ -65,18 +67,32 @@ python3 scripts/jumpserver_api/jms_diagnose.py user-nodes --user-id 4f8b763f-5c2
 这两个子命令会直接读取 JumpServer effective access 接口：
 - `user-assets` 从 `/api/v1/perms/users/{user_id}/assets/` 获取用户当前可访问资产。
 - `user-nodes` 从 `/api/v1/perms/users/{user_id}/nodes/` 获取用户当前可访问节点。
+- `user-assets` / `user-nodes` / `user-asset-access` 支持额外传 `--org-id` 或 `--org-name`，只在当前命令内临时限定查询组织，不会写回 `.env`。
 - `user-assets` 会按服务端返回的分页 `next` 自动继续拉取并去重，最终输出聚合后的 `asset_count` 与完整 `assets` 列表。
 - `user-nodes` 输出聚合后的 `node_count` 与完整 `nodes` 列表。
 - `data_source` 会保留本次查询使用的 endpoint 与参数，便于对照页面请求排查。
+- `effective_org`、`switchable_orgs` 与 `org_context_hint` 会保留本次命令实际使用的组织范围，便于排查“结果查到哪里去了”。
 - 当前输出已去掉 `reported_*` 与 `*_record_count` 这类重复字段；若接口没有异常，`warnings` 通常为空数组。
 
 资产级账号与协议：
 
 ```bash
 python3 scripts/jumpserver_api/jms_diagnose.py user-asset-access --username openclaw --asset-name openclaw资产
+python3 scripts/jumpserver_api/jms_diagnose.py user-asset-access --org-name Default --username jingyu.qi --asset-name shengchan
 python3 scripts/jumpserver_api/jms_diagnose.py user-asset-access --user-name openclaw --asset-name openclaw资产
 python3 scripts/jumpserver_api/jms_diagnose.py user-asset-access --user-id 4f8b763f-5c21-4b77-903c-37a7838968ae --asset-id 84d763b2-08bb-4d39-8fab-993714857642
 ```
+
+资产视角解释规则命中：
+
+```bash
+python3 scripts/jumpserver_api/jms_diagnose.py asset-permission-explain --asset-name 'AI 自动创建测试'
+python3 scripts/jumpserver_api/jms_diagnose.py asset-permission-explain --org-name Default --asset-name 'AI 自动创建测试'
+```
+
+- `asset-permission-explain` 会按资产 id、标签和节点继承关系解释命中的权限规则。
+- 节点继承使用 `full_value` 的前缀关系：授权 `/Default` 会覆盖 `/Default/Linux` 及更深层后代；授权 `/Default/Linux` 只覆盖该分支及其后代。
+- `match_source` 固定为 `direct_asset`、`shared_label` 或 `node_ancestor`。
 
 设置、许可证与系统对象：
 

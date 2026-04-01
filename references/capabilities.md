@@ -110,5 +110,5 @@
 ## 待确认项
 
 - `失效账号查询` 当前以 `/api/v1/users/users/` 为准输出 JumpServer 用户账号；资产账号失效字段在 inventory 中未形成统一语义，暂不臆造。
-- `permissions` 与 `user-assets/user-nodes/user-asset-access` 依赖 `/api/v1/perms/asset-permissions/` 的实际可用性；若目标环境关闭或权限不足，能力会返回明确阻塞信息。
+- `permissions` 与 `user-asset-access` 依赖 `/api/v1/perms/asset-permissions/` 的实际可用性；`user-assets` / `user-nodes` 直接依赖 `/api/v1/perms/users/{user_id}/assets|nodes/` 的 effective access 接口。
 - 系统设置类能力统一基于 `/api/v1/settings/setting/` 做键值切片；具体键名因环境配置差异可能不同，脚本会保留原始键值并提示人工复核。

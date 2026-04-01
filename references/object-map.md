@@ -38,6 +38,8 @@
 | 某某用户有哪些节点 | `diagnose user-nodes` | [diagnose.md](diagnose.md) |
 | 某某用户在某资产下有哪些账号 / 协议 | `diagnose user-asset-access` | [diagnose.md](diagnose.md) |
 | 某某用户为什么能访问某资产 | `diagnose user-asset-access` + `permissions list/get` | [permissions.md](permissions.md) |
+| 某资产授权给了谁 | `query asset-perm-users` | [permissions.md](permissions.md) |
+| 某资产为什么会被授权 / 节点授权是否覆盖某资产 | `diagnose asset-permission-explain` | [diagnose.md](diagnose.md) |
 | 某对象怎么精确解析 | `list/get/resolve/resolve-platform` | [assets.md](assets.md) / [diagnose.md](diagnose.md) |
 
 ## 名称字段映射
@@ -55,7 +57,7 @@
 补充说明：
 
 - `user-assets` / `user-nodes` / `user-asset-access` 的用户定位同时尝试 `username` 与显示名 `name`；中文姓名可以直接作为自然语言输入。
-- “在 Default 组织下”这类表达先解析组织并切换组织，再执行用户有效访问范围查询。
+- “在 Default 组织下”这类表达优先解析成 `--org-id` / `--org-name` 的命令级组织覆盖，再执行用户有效访问范围查询，不要求先写回 `.env`。
 
 ## 歧义处理
 

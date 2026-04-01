@@ -29,7 +29,12 @@ from jumpserver_api.jms_analytics import (
     _fetch_session_records,
     _login_records,
     _normalize_time_filters,
+    _resolve_asset,
+    _resolve_user,
     _server_filters,
+    build_node_lookup,
+    explain_asset_permissions,
+    match_permission_to_asset,
     run_capability,
 )
 from jumpserver_api.jms_capabilities import CAPABILITIES
@@ -203,6 +208,90 @@ def _validate_asset_selector(args: argparse.Namespace) -> None:
     )
 
 
+def _validate_org_override_selector(args: argparse.Namespace) -> None:
+    provided = [
+        name
+        for name, value in {
+            "org_id": getattr(args, "org_id", None),
+            "org_name": getattr(args, "org_name", None),
+        }.items()
+        if str(value or "").strip()
+    ]
+    if len(provided) > 1:
+        raise CLIError(
+            "Provide at most one of --org-id or --org-name.",
+            payload={"provided": provided},
+        )
+
+
+def _build_command_org_context(selected_org: dict, accessible_orgs: list[dict]) -> dict:
+    effective_org = {**selected_org, "source": "command_explicit"}
+    effective_org_id = str(effective_org.get("id") or "").strip()
+    switchable_orgs = [
+        item for item in accessible_orgs if str(item.get("id") or "").strip() and str(item.get("id") or "").strip() != effective_org_id
+    ]
+    org_scope = "%s (%s)" % (
+        str(effective_org.get("name") or "").strip() or "Unknown",
+        effective_org_id or "<unknown-org-id>",
+    )
+    return {
+        "accessible_orgs": accessible_orgs,
+        "candidate_orgs": accessible_orgs,
+        "effective_org": effective_org,
+        "multiple_accessible_orgs": len(accessible_orgs) > 1,
+        "selection_required": False,
+        "reserved_org_auto_select_eligible": False,
+        "selected_org_accessible": True,
+        "switchable_orgs": switchable_orgs,
+        "switchable_org_count": len(switchable_orgs),
+        "org_context_hint": "当前查询范围固定为组织 %s；本次命令仅临时按该组织执行，不会写回本地配置。" % org_scope,
+    }
+
+
+def _resolve_command_query_scope(args: argparse.Namespace) -> dict:
+    org_id = str(getattr(args, "org_id", None) or "").strip()
+    org_name = str(getattr(args, "org_name", None) or "").strip()
+    if not org_id and not org_name:
+        org_context = ensure_selected_org_context()
+        return {
+            "client": create_client(),
+            "discovery": create_discovery(),
+            "org_context": org_context,
+        }
+
+    accessible_orgs = list_accessible_orgs()
+    if org_id:
+        matches = [item for item in accessible_orgs if str(item.get("id") or "").strip() == org_id]
+    else:
+        matches = _exact_first_filter([item for item in accessible_orgs if isinstance(item, dict)], org_name, "name")
+    if not matches:
+        raise CLIError(
+            "Organization %s is not accessible in the current environment."
+            % (org_id or org_name),
+            payload={
+                "org_id": org_id or None,
+                "org_name": org_name or None,
+                "candidate_orgs": accessible_orgs,
+            },
+        )
+    if len(matches) > 1:
+        raise CLIError(
+            "Multiple organizations matched the provided identifier.",
+            payload={
+                "org_id": org_id or None,
+                "org_name": org_name or None,
+                "candidate_orgs": matches[:10],
+            },
+        )
+    org_context = _build_command_org_context(dict(matches[0]), accessible_orgs)
+    effective_org_id = str((org_context.get("effective_org") or {}).get("id") or "").strip()
+    return {
+        "client": create_client(org_id=effective_org_id),
+        "discovery": create_discovery(org_id=effective_org_id),
+        "org_context": org_context,
+    }
+
+
 def _normalize_effective_access_payload(payload, *, resource: str):
     if isinstance(payload, list):
         records = [item for item in payload if isinstance(item, dict)]
@@ -248,27 +337,27 @@ def _fetch_effective_access_records(client, path: str, *, resource: str, params=
     return collected, len(collected), reported_total, warnings
 
 
-def _effective_user_access(user):
-    client = create_client()
+def _effective_user_access(user, *, client=None, org_context=None):
+    active_client = client or create_client()
     user_id = str(user.get("id") or "")
     assets_path = "/api/v1/perms/users/%s/assets/" % user_id
     nodes_path = "/api/v1/perms/users/%s/nodes/" % user_id
     asset_params = {"all": 1, "asset": "", "node": "", "offset": 0, "limit": DEFAULT_PAGE_SIZE, "display": 1, "draw": 1}
     node_params = {"all": 1}
     assets, asset_count, reported_asset_count, asset_warnings = _fetch_effective_access_records(
-        client,
+        active_client,
         assets_path,
         resource="assets",
         params=asset_params,
     )
     nodes, node_count, reported_node_count, node_warnings = _fetch_effective_access_records(
-        client,
+        active_client,
         nodes_path,
         resource="nodes",
         params=node_params,
     )
     warnings = [*asset_warnings, *node_warnings]
-    return {
+    result = {
         "asset_count": asset_count,
         "node_count": node_count,
         "assets": assets,
@@ -282,15 +371,25 @@ def _effective_user_access(user):
         },
         "warnings": warnings,
     }
+    if org_context is not None:
+        result.update(org_context_output(org_context))
+    return result
 
 
 def _user_assets(args: argparse.Namespace):
     _validate_user_selector(args)
-    ensure_selected_org_context()
-    from jumpserver_api.jms_analytics import _resolve_user
+    _validate_org_override_selector(args)
 
-    user = _resolve_user(args.user_id, args.username)
-    return {"user": user, **_effective_user_access(user)}
+    query_scope = _resolve_command_query_scope(args)
+    user = _resolve_user(args.user_id, args.username, discovery=query_scope["discovery"])
+    return {
+        "user": user,
+        **_effective_user_access(
+            user,
+            client=query_scope["client"],
+            org_context=query_scope["org_context"],
+        ),
+    }
 
 
 def _user_nodes(args: argparse.Namespace):
@@ -303,82 +402,29 @@ def _user_nodes(args: argparse.Namespace):
         "matched_permissions": result["matched_permissions"],
         "data_source": result["data_source"],
         "warnings": result["warnings"],
+        "effective_org": result.get("effective_org"),
+        "switchable_orgs": result.get("switchable_orgs") or [],
+        "switchable_org_count": int(result.get("switchable_org_count") or 0),
+        "org_context_hint": result.get("org_context_hint"),
     }
-
-
-def _node_full_value(node_lookup, node_id: str, *, fallback_name: str | None = None) -> str:
-    node = node_lookup.get(node_id) or {}
-    full_value = str(node.get("full_value") or "").strip()
-    if full_value:
-        return full_value
-    name = str(node.get("value") or node.get("name") or fallback_name or "").strip()
-    return "/%s" % name if name else ""
-
-
-def _permission_matches_asset(*, permission, asset, node_lookup) -> bool:
-    asset_id = str(asset.get("id") or "")
-    asset_ids = {str(obj.get("id", obj)) for obj in permission.get("assets", [])}
-    if asset_id and asset_id in asset_ids:
-        return True
-
-    asset_label_ids = {str(obj.get("id", obj)) for obj in asset.get("labels", [])}
-    permission_label_ids = {str(obj.get("id", obj)) for obj in permission.get("labels", [])}
-    if asset_label_ids and permission_label_ids and (asset_label_ids & permission_label_ids):
-        return True
-
-    asset_paths = set()
-    for node in asset.get("nodes", []):
-        if isinstance(node, dict):
-            node_id = str(node.get("id") or "")
-            full_value = _node_full_value(
-                node_lookup,
-                node_id,
-                fallback_name=str(node.get("name") or node.get("value") or ""),
-            )
-            if full_value:
-                asset_paths.add(full_value)
-    for display in asset.get("nodes_display", []) or []:
-        display_text = str(display or "").strip()
-        if display_text:
-            asset_paths.add(display_text)
-
-    permission_paths = set()
-    for node in permission.get("nodes", []):
-        if isinstance(node, dict):
-            node_id = str(node.get("id") or "")
-            full_value = _node_full_value(
-                node_lookup,
-                node_id,
-                fallback_name=str(node.get("name") or node.get("value") or ""),
-            )
-        else:
-            full_value = _node_full_value(node_lookup, str(node))
-        if full_value:
-            permission_paths.add(full_value)
-
-    for asset_path in asset_paths:
-        for permission_path in permission_paths:
-            prefix = permission_path.rstrip("/") + "/"
-            if asset_path == permission_path or asset_path.startswith(prefix):
-                return True
-    return False
-
 
 def _user_asset_access(args: argparse.Namespace):
     _validate_user_selector(args)
     _validate_asset_selector(args)
-    ensure_selected_org_context()
-    from jumpserver_api.jms_analytics import _list_permissions, _resolve_asset, _resolve_user
+    _validate_org_override_selector(args)
+    from jumpserver_api.jms_analytics import _list_permissions
 
-    client = create_client()
-    user = _resolve_user(args.user_id, args.username)
+    query_scope = _resolve_command_query_scope(args)
+    client = query_scope["client"]
+    discovery = query_scope["discovery"]
+    user = _resolve_user(args.user_id, args.username, discovery=discovery)
     user_group_ids = {str(item.get("id", item)) for item in user.get("groups", [])}
-    asset = _resolve_asset(args.asset_id, args.asset_name)
-    node_lookup = {str(item.get("id") or ""): item for item in _effective_user_access(user).get("nodes", []) if isinstance(item, dict)}
+    asset = _resolve_asset(args.asset_id, args.asset_name, discovery=discovery)
+    node_lookup = build_node_lookup(discovery=discovery)
     permed_accounts = set()
     permed_protocols = set()
     matched_permissions = []
-    for item in _list_permissions():
+    for item in _list_permissions(client=client):
         permission_id = str(item.get("id") or "").strip()
         if not permission_id:
             continue
@@ -387,9 +433,17 @@ def _user_asset_access(args: argparse.Namespace):
         group_ids = {str(obj.get("id", obj)) for obj in detail.get("user_groups", [])}
         if str(user.get("id")) not in user_ids and not (group_ids & user_group_ids):
             continue
-        if not _permission_matches_asset(permission=detail, asset=asset, node_lookup=node_lookup):
+        match = match_permission_to_asset(detail, asset, node_lookup=node_lookup)
+        if not match:
             continue
-        matched_permissions.append({"id": detail.get("id"), "name": detail.get("name")})
+        matched_permissions.append(
+            {
+                "id": detail.get("id"),
+                "name": detail.get("name"),
+                "match_source": match["match_source"],
+                "match_evidence": match["match_evidence"],
+            }
+        )
         for account in detail.get("accounts", []):
             if isinstance(account, dict):
                 permed_accounts.add(str(account.get("name") or account.get("username") or account.get("id")))
@@ -406,7 +460,21 @@ def _user_asset_access(args: argparse.Namespace):
         "permed_accounts": sorted(permed_accounts),
         "permed_protocols": sorted(permed_protocols),
         "matched_permissions": matched_permissions,
+        **org_context_output(query_scope["org_context"]),
     }
+
+
+def _asset_permission_explain(args: argparse.Namespace):
+    _validate_asset_selector(args)
+    _validate_org_override_selector(args)
+    query_scope = _resolve_command_query_scope(args)
+    asset = _resolve_asset(args.asset_id, args.asset_name, discovery=query_scope["discovery"])
+    explanation = explain_asset_permissions(
+        asset,
+        client=query_scope["client"],
+        discovery=query_scope["discovery"],
+    )
+    return {**explanation, **org_context_output(query_scope["org_context"])}
 
 
 def _format_recent_audit_record(audit_type: str, item: dict, *, filters: dict | None = None) -> dict:
@@ -567,6 +635,11 @@ def _capabilities(_: argparse.Namespace):
     ]
 
 
+def _add_optional_org_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--org-id")
+    parser.add_argument("--org-name")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="JumpServer diagnostics, inventory and settings inspection.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -602,11 +675,13 @@ def build_parser() -> argparse.ArgumentParser:
     user_assets_parser = subparsers.add_parser("user-assets")
     user_assets_parser.add_argument("--user-id")
     user_assets_parser.add_argument("--username", "--user-name", dest="username")
+    _add_optional_org_arguments(user_assets_parser)
     user_assets_parser.set_defaults(func=_user_assets)
 
     user_nodes_parser = subparsers.add_parser("user-nodes")
     user_nodes_parser.add_argument("--user-id")
     user_nodes_parser.add_argument("--username", "--user-name", dest="username")
+    _add_optional_org_arguments(user_nodes_parser)
     user_nodes_parser.set_defaults(func=_user_nodes)
 
     user_asset_access_parser = subparsers.add_parser("user-asset-access")
@@ -614,7 +689,14 @@ def build_parser() -> argparse.ArgumentParser:
     user_asset_access_parser.add_argument("--username", "--user-name", dest="username")
     user_asset_access_parser.add_argument("--asset-id")
     user_asset_access_parser.add_argument("--asset-name")
+    _add_optional_org_arguments(user_asset_access_parser)
     user_asset_access_parser.set_defaults(func=_user_asset_access)
+
+    asset_permission_explain_parser = subparsers.add_parser("asset-permission-explain")
+    asset_permission_explain_parser.add_argument("--asset-id")
+    asset_permission_explain_parser.add_argument("--asset-name")
+    _add_optional_org_arguments(asset_permission_explain_parser)
+    asset_permission_explain_parser.set_defaults(func=_asset_permission_explain)
 
     recent_audit_parser = subparsers.add_parser("recent-audit")
     recent_audit_parser.add_argument("--audit-type", required=True, choices=["operate", "login", "session", "command"])
